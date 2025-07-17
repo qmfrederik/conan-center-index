@@ -1,0 +1,28 @@
+From 9e90438b020adeddeed6c9a5cabaa246734fe194 Mon Sep 17 00:00:00 2001
+From: Frederik Carlier <frederik.carlier@keysight.com>
+Date: Thu, 17 Jul 2025 20:08:15 +0000
+Subject: [PATCH] getopt: Don't include unistd.h when compiling with MSVC
+
+---
+ getopt.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/getopt.c b/getopt.c
+index 6d1c9218..b0490fee 100644
+--- a/getopt.c
++++ b/getopt.c
+@@ -32,8 +32,10 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+-#include <unistd.h>
+ 
++#ifndef _MSC_VER
++#include <unistd.h>
++#endif
+ 
+ /* Comment out all this code if we are using the GNU C Library, and are not
+    actually compiling the library itself.  This code is part of the GNU C
+-- 
+2.50.0.windows.1
+

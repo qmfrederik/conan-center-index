@@ -2,8 +2,8 @@ from conan import ConanFile
 from conan.errors import ConanInvalidConfiguration
 from conan.tools.apple import fix_apple_shared_install_name
 from conan.tools.build import cross_building
-from conan.tools.env import VirtualBuildEnv, VirtualRunEnv
-from conan.tools.files import copy, get, replace_in_file, rmdir
+from conan.tools.env import Environment, VirtualBuildEnv, VirtualRunEnv
+from conan.tools.files import apply_conandata_patches, export_conandata_patches, copy, get, replace_in_file, rmdir
 from conan.tools.gnu import Autotools, AutotoolsDeps, AutotoolsToolchain
 from conan.tools.layout import basic_layout
 from conan.tools.microsoft import is_msvc, unix_path
@@ -12,6 +12,9 @@ import os
 
 required_conan_version = ">=1.54.0"
 
+# Windows patches inspired by vcpkg: https://github.com/microsoft/vcpkg/tree/master/ports/nettle
+# Windows workarounds inspired by: https://github.com/conan-io/conan-center-index/blob/4bd552e72d869c3f8fe6c0102e3777edb9902161/recipes/coin-utils/all/conanfile.py#L113
+# and https://github.com/conan-io/conan-center-index/blob/master/recipes/wolfssl/all/conanfile.py
 
 class NettleConan(ConanFile):
     name = "nettle"
@@ -33,11 +36,14 @@ class NettleConan(ConanFile):
     default_options = {
         "shared": False,
         "fPIC": True,
-        "public_key": True,
+        "public_key": False,
         "fat": False,
         "x86_aesni": False,
         "x86_shani": False,
     }
+
+    def export_sources(self):
+        export_conandata_patches(self)
 
     def config_options(self):
         if self.settings.os == "Windows":
@@ -62,7 +68,7 @@ class NettleConan(ConanFile):
             self.requires("gmp/6.3.0")
 
     def validate(self):
-        if is_msvc(self):
+        if Version(self.version) < "3.10" and is_msvc(self):
             raise ConanInvalidConfiguration(f"{self.ref} cannot be built with Visual Studio")
         if Version(self.version) < "3.6" and self.options.get_safe("fat") and self.settings.arch == "x86_64":
             raise ConanInvalidConfiguration("fat support is broken on this nettle release (due to a missing x86_64/sha_ni/sha1-compress.asm source)")
@@ -80,6 +86,7 @@ class NettleConan(ConanFile):
 
     def source(self):
         get(self, **self.conan_data["sources"][self.version], strip_root=True)
+        apply_conandata_patches(self)
 
     def generate(self):
         env = VirtualBuildEnv(self)
@@ -94,9 +101,53 @@ class NettleConan(ConanFile):
             "--enable-x86-aesni" if self.options.get_safe("x86_aesni") else "--disable-x86-aesni",
             "--enable-x86_sshni" if self.options.get_safe("x86_sshni") else "--disable-x86_sshni",
         ])
-        tc.generate()
-        tc = AutotoolsDeps(self)
-        tc.generate()
+        
+        env = tc.environment()
+        if is_msvc(self):
+            tc.configure_args.extend(["--enable-assembler=no"])
+            automake_conf = self.dependencies.build["automake"].conf_info
+            compile_wrapper = unix_path(self, automake_conf.get("user.automake:compile-wrapper", check_type=str))
+            ar_wrapper = unix_path(self, automake_conf.get("user.automake:lib-wrapper", check_type=str))
+            env.define("CC", f"{compile_wrapper} cl -nologo")
+            env.define("CXX", f"{compile_wrapper} cl -nologo")
+            env.define("LD", "link -nologo")
+            env.define("AR", f"{ar_wrapper} \"lib -nologo\"")
+            env.define("NM", "dumpbin -symbols")
+            env.define("OBJDUMP", ":")
+            env.define("RANLIB", ":")
+            env.define("STRIP", ":")
+        tc.generate(env)
+
+        if is_msvc(self):
+            # Custom AutotoolsDeps for cl like compilers
+            # workaround for https://github.com/conan-io/conan/issues/12784
+            includedirs = []
+            defines = []
+            libs = []
+            libdirs = []
+            linkflags = []
+            cxxflags = []
+            cflags = []
+            for dependency in self.dependencies.values():
+                deps_cpp_info = dependency.cpp_info.aggregated_components()
+                includedirs.extend(deps_cpp_info.includedirs)
+                defines.extend(deps_cpp_info.defines)
+                libs.extend(deps_cpp_info.libs + deps_cpp_info.system_libs)
+                libdirs.extend(deps_cpp_info.libdirs)
+                linkflags.extend(deps_cpp_info.sharedlinkflags + deps_cpp_info.exelinkflags)
+                cxxflags.extend(deps_cpp_info.cxxflags)
+                cflags.extend(deps_cpp_info.cflags)
+
+            env = Environment()
+            env.append("CPPFLAGS", [f"-I{unix_path(self, p)}" for p in includedirs] + [f"-D{d}" for d in defines])
+            env.append("_LINK_", [lib if lib.endswith(".lib") else f"{lib}.lib" for lib in libs])
+            env.append("LDFLAGS", [f"-L{unix_path(self, p)}" for p in libdirs] + linkflags)
+            env.append("CXXFLAGS", cxxflags)
+            env.append("CFLAGS", cflags)
+            env.vars(self).save_script("conanautotoolsdeps_cl_workaround")
+        else:
+            deps = AutotoolsDeps(self)
+            deps.generate()
 
     def _patch_sources(self):
         makefile_in = os.path.join(self.source_folder, "Makefile.in")
@@ -104,6 +155,10 @@ class NettleConan(ConanFile):
         replace_in_file(self, makefile_in,
                               "SUBDIRS = tools testsuite examples",
                               "SUBDIRS = ")
+        if is_msvc(self):
+            replace_in_file(self, makefile_in,
+                                "$(CC_FOR_BUILD) $< -lm -o $@",
+                                "$(CC_FOR_BUILD) $< -o $@")
         # Fix broken tests for compilers like apple-clang with -Werror,-Wimplicit-function-declaration
         replace_in_file(self, os.path.join(self.source_folder, "aclocal.m4"),
                               "cat >conftest.c <<EOF",

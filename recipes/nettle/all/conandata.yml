@@ -1,4 +1,7 @@
 sources:
+  "3.10":
+    url: "https://ftp.gnu.org/gnu/nettle/nettle-3.10.tar.gz"
+    sha256: "b4c518adb174e484cb4acea54118f02380c7133771e7e9beb98a0787194ee47c"
   "3.9.1":
     url: "https://ftp.gnu.org/gnu/nettle/nettle-3.9.1.tar.gz"
     sha256: "ccfeff981b0ca71bbd6fbcb054f407c60ffb644389a5be80d6716d5b550c6ce3"
@@ -11,3 +14,7 @@ sources:
   "3.5":
     url: "https://ftp.gnu.org/gnu/nettle/nettle-3.5.tar.gz"
     sha256: "432d98dcd341cbd063a963025524122368c1f2ee9c721bb68d771d5e34674b4f"
+
+patches:
+  "3.10":
+    - patch_file: "patches/0001-getopt-Don-t-include-unistd.h-when-compiling-with-MS.patch"
